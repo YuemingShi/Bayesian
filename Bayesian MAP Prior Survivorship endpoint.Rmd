@@ -199,3 +199,116 @@ ggplot(df_final, aes(x = p)) +
 ```
 
 
+
+
+
+
+```{r}
+#gotcha for edge effect, see plot
+# prior definition
+a_full <- 12480
+b_full <- 631
+prior_mean <- 1 - 0.048
+ess_target <- 38# same as ours
+a_scaled <- prior_mean * ess_target
+b_scaled <- (1 - prior_mean) * ess_target
+
+cat("✅ Scaled Beta Prior:\n")
+cat("a =", round(a_scaled, 3), "\n")
+cat("b =", round(b_scaled, 3), "\n")
+cat("Mean =", round(a_scaled / (a_scaled + b_scaled), 4), "\n")
+cat("ESS =", round(a_scaled + b_scaled, 1), "\n\n")
+
+# Libraries
+library(ggplot2)
+library(tidyr)
+library(bayestestR)
+
+# Plot 1: Prior Distribution
+x_vals <- seq(0.85, 1.00, length.out = 1000)
+df <- data.frame(
+  p = x_vals,
+  Original = dbeta(x_vals, a_full, b_full),
+  Scaled = dbeta(x_vals, a_scaled, b_scaled)
+)
+df_long <- pivot_longer(df, cols = c("Original", "Scaled"), names_to = "Prior", values_to = "Density")
+
+ggplot(df_long, aes(x = p, y = Density, color = Prior)) +
+  geom_line(size = 1) +
+  labs(
+    title = "Original vs Scaled Informative Beta Prior",
+    subtitle = paste("Original ESS =", a_full + b_full, "| Scaled ESS =", ess_target),
+    x = "Survival Probability",
+    y = "Density"
+  ) +
+  scale_color_manual(values = c("Original" = "blue", "Scaled" = "red")) +
+  theme_minimal()
+
+# 95% HDI
+set.seed(123)
+prior_samples <- rbeta(100000, shape1 = a_scaled, shape2 = b_scaled)
+hdi_prior <- hdi(prior_samples, ci = 0.95)
+print(hdi_prior)
+
+# Assurance setup
+a_prior <- a_scaled
+b_prior <- b_scaled
+p_true <- 0.918
+threshold <- p_true - 0.08
+alpha <- 0.05
+target_assurance <- 0.80
+
+# Function
+assurance_beta <- function(n, a0, b0, p_true, threshold, alpha = 0.05) {
+  probs <- dbinom(0:n, size = n, prob = p_true)
+  pass_probs <- numeric(length = n + 1)
+  for (x in 0:n) {
+    a_post <- a0 + x
+    b_post <- b0 + n - x
+    lower <- qbeta(alpha / 2, a_post, b_post)
+    pass_probs[x + 1] <- ifelse(lower > threshold, probs[x + 1], 0)
+  }
+  sum(pass_probs)
+}
+
+# Evaluate assurance
+n_range <- 5:100
+assurances <- sapply(n_range, function(n) assurance_beta(n, a_prior, b_prior, p_true, threshold, alpha))
+min_n <- n_range[which(assurances >= target_assurance)[1]]
+
+cat("✅ Minimum sample size n =", min_n, "\n")
+
+# Vector of TRUE/FALSE where assurance > target
+above_80 <- assurances > target_assurance
+
+# Find first n where all subsequent n also > 80%
+min_n <- NA
+for (i in seq_along(n_range)) {
+  if (all(above_80[i:length(above_80)])) {
+    min_n <- n_range[i]
+    break
+  }
+}
+
+cat("✅ First n such that all larger n have assurance > 80%:", min_n, "\n")
+
+
+assurance_df <- data.frame(n = n_range, assurance = assurances)
+print(head(assurance_df[assurance_df$assurance >= 0.8, ], 50))
+
+# Plot 2: Assurance vs. Sample Size
+ggplot(assurance_df, aes(x = n, y = assurance)) +
+  geom_line(color = "darkgreen", size = 1.2) +
+  geom_hline(yintercept = target_assurance, linetype = "dashed", color = "red") +
+  labs(
+    title = "Bayesian Assurance vs. Sample Size (n)",
+    subtitle = paste("Prior: Beta(", round(a_prior, 2), ",", round(b_prior, 2), ") | Threshold =", threshold),
+    x = "Sample Size (n)",
+    y = "Assurance (Pr[Lower 95% CI > Threshold])"
+  ) +
+  theme_minimal()
+
+```
+
+
+
