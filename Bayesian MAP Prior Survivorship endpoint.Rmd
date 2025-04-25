@@ -1,0 +1,201 @@
+---
+title: "Untitled"
+author: "Yueming Shi"
+date: '2025-04-25'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+```{r}
+# Load required libraries
+library(bayestestR)  # For computing HDIs from posterior draws
+library(ggplot2)     # For plotting
+library(dplyr)
+library(tidyr)
+
+# Define prior parameters
+a_inf <- 10001  # alpha for informative prior
+b_inf <- 4707   # beta for informative prior
+a_vague <- 1    # vague prior ~ Beta(1, 1)
+b_vague <- 1
+
+# Set assumptions
+p_true <- 0.66       # true survival rate at 2 years
+threshold <- 0.6     # success criteria: lower 95% HDI > 0.6
+n_samples <- 10000   # posterior samples per trial for HDI estimation
+n_sim <- 2000         # number of simulated trials per n/w point
+
+set.seed(123)  # for reproducibility
+
+# Function to generate posterior samples using a robust mixture prior
+robust_posterior_samples <- function(w, x, n) {
+  # Update informative prior
+  a_post_inf <- a_inf + x
+  b_post_inf <- b_inf + n - x
+  
+  # Update vague prior
+  a_post_vague <- a_vague + x
+  b_post_vague <- b_vague + n - x
+  
+  # Draw samples from each component of the posterior
+  n_inf <- round(n_samples * w)
+  n_vague <- n_samples - n_inf
+  
+  # Combine into mixture posterior sample
+  c(
+    rbeta(n_inf, a_post_inf, b_post_inf),
+    rbeta(n_vague, a_post_vague, b_post_vague)
+  )
+}
+
+# Function to compute assurance = Pr(HDI_lower > threshold)
+assess_assurance <- function(n, w, p_true, threshold, n_sim) {
+  pass <- 0  # counter for successful trials
+  
+  for (i in 1:n_sim) {
+    # Simulate trial result: number of survivors
+    x <- rbinom(1, n, p_true)
+    
+    # Compute mixture posterior
+    samples <- robust_posterior_samples(w, x, n)
+    
+    # Compute 95% HDI
+    hdi_result <- hdi(samples, ci = 0.95)
+    
+    # Check if lower bound passes the threshold
+    if (hdi_result$CI_low > threshold) {
+      pass <- pass + 1
+    }
+  }
+  
+  return(pass / n_sim)  # empirical assurance
+}
+
+# Define the grid of sample sizes and prior weights to evaluate
+n_range <- seq(20, 80, by = 10)       # candidate sample sizes
+w_values <- c(0.5, 0.7, 0.9)          # prior weights
+grid <- expand.grid(n = n_range, w = w_values)
+
+# Run assurance calculation for each (n, w) pair
+grid$assurance <- mapply(function(n, w) {
+  assess_assurance(n, w, p_true, threshold, n_sim)
+}, grid$n, grid$w)
+
+# Plot assurance vs sample size
+ggplot(grid, aes(x = n, y = assurance, color = factor(w))) +
+  geom_line(linewidth = 1) +
+  geom_point() +
+  geom_hline(yintercept = 0.8, linetype = "dashed", color = "red") +
+  scale_color_brewer(palette = "Dark2", name = "w (Mixture Weight)") +
+  labs(
+    title = "Assurance vs. Sample Size (n) for Different Prior Weights",
+    x = "Sample Size (n)",
+    y = "Assurance (P[HDI_lower > 0.6])"
+  ) +
+  theme_minimal()
+
+# Create a wide matrix-like table of assurance values for each n and w
+assurance_matrix <- grid %>%
+  mutate(w = paste0("w=", w)) %>%
+  pivot_wider(names_from = w, values_from = assurance)
+
+# Print the matrix
+print(assurance_matrix)
+
+# Find minimum n where assurance >= 0.8 per w
+assurance_target <- 0.8
+
+min_n_per_w <- grid %>%
+  group_by(w) %>%
+  filter(assurance >= assurance_target) %>%
+  slice_min(n, n = 1, with_ties = FALSE) %>%
+  arrange(w)
+
+# Print results
+print(min_n_per_w)
+
+
+# ------------------------
+# Optional: Posterior plot for one example trial
+# ------------------------
+
+# Pick one case for visualizing the posterior
+w <- 0.8
+n <- 30
+x <- 20  # e.g., 20 of 30 survived
+
+# Generate samples from each posterior component
+samples_inf <- rbeta(round(n_samples * w), a_inf + x, b_inf + n - x)
+samples_vague <- rbeta(round(n_samples * (1 - w)), a_vague + x, b_vague + n - x)
+samples_mix <- c(samples_inf, samples_vague)
+
+# Create dataframe for plotting
+posterior_df <- data.frame(
+  value = c(samples_inf, samples_vague, samples_mix),
+  prior = factor(c(
+    rep("Informative", length(samples_inf)),
+    rep("Vague", length(samples_vague)),
+    rep("Mixture", length(samples_mix))
+  ))
+)
+
+# Plot the posterior densities
+ggplot(posterior_df, aes(x = value, color = prior)) +
+  geom_density(linewidth = 1) +
+  geom_vline(xintercept = 0.6, linetype = "dashed", color = "red") +
+  labs(
+    title = "Posterior Distributions (n = 30, x = 20, w = 0.8)",
+    x = "2-Year Survival Probability",
+    y = "Density",
+    color = "Posterior"
+  ) +
+  theme_minimal()
+
+```
+
+```{r}
+# Suppose we collected n = 35 patients, with x = 26 surviving at 2 years
+n <- 35
+x <- 26
+w <- 0.3  # same prior weight as used in design
+
+# Generate posterior samples from robust mixture prior
+samples <- robust_posterior_samples(w, x, n)
+
+# Compute posterior HDI
+posterior_hdi <- hdi(samples, ci = 0.95)
+
+# Summary stats
+posterior_summary <- list(
+  mean = mean(samples),
+  median = median(samples),
+  sd = sd(samples),
+  hdi = posterior_hdi,
+  passes = posterior_hdi$CI_low > threshold
+)
+
+# Print the results
+print(posterior_summary)
+
+#plot posterior
+
+df_final <- data.frame(p = samples)
+
+ggplot(df_final, aes(x = p)) +
+  geom_density(fill = "steelblue", alpha = 0.5) +
+  geom_vline(xintercept = threshold, linetype = "dashed", color = "red") +
+  labs(
+    title = paste("Posterior after observing", x, "successes out of", n),
+    x = "Estimated 2-Year Survival Probability",
+    y = "Density"
+  ) +
+  theme_minimal()
+
+```
+
+
